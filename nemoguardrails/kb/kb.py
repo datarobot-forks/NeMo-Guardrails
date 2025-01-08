@@ -114,18 +114,18 @@ class KnowledgeBase:
         if not index_items:
             return
 
-        # We compute the md5
+        # We compute the sha256
         # As part of the hash, we also include the embedding engine and the model
         # to prevent the cache being used incorrectly when the embedding model changes.
         hash_prefix = self.config.embedding_search_provider.parameters.get(
             "embedding_engine", ""
         ) + self.config.embedding_search_provider.parameters.get("embedding_model", "")
 
-        md5_hash = hashlib.md5(
+        sha256_hash = hashlib.sha256(
             (hash_prefix + "".join(all_text_items)).encode("utf-8")
         ).hexdigest()
-        cache_file = os.path.join(CACHE_FOLDER, f"{md5_hash}.ann")
-        embedding_size_file = os.path.join(CACHE_FOLDER, f"{md5_hash}.esize")
+        cache_file = os.path.join(CACHE_FOLDER, f"{sha256_hash}.ann")
+        embedding_size_file = os.path.join(CACHE_FOLDER, f"{sha256_hash}.esize")
 
         # If we have already computed this before, we use it
         if (
