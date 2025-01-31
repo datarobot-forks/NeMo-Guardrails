@@ -1,12 +1,26 @@
-define subflow jailbreak detection heuristics
+
+flow jailbreak detection heuristics
   """
   Heuristic checks to assess whether the user's prompt is an attempted jailbreak.
   """
-  $is_jailbreak = execute jailbreak_detection_heuristics
+  $is_jailbreak = await JailbreakDetectionHeuristicsAction
 
   if $is_jailbreak
-    bot refuse to respond
-    stop
+    if $system.config.enable_rails_exceptions
+      send JailbreakDetectionRailException(message="Jailbreak attempt detected. The user's prompt was identified as an attempted jailbreak. Please ensure your prompt adheres to the guidelines.")
+    else
+      bot refuse to respond
+    abort
 
-define bot refuse to respond
-  "I'm sorry, I can't respond to that."
+flow jailbreak detection model
+  """
+  Assess whether the user's prompt is an attempted jailbreak using embedding-based jailbreak detection models.
+  """
+  $is_jailbreak = await JailbreakDetectionModelAction
+
+  if $is_jailbreak
+    if $system.config.enable_rails_exceptions
+      send JailbreakDetectionRailException(message="Jailbreak attempt detected. The user's prompt was identified as an attempted jailbreak. Please ensure your prompt adheres to the guidelines.")
+    else
+      bot refuse to respond
+    abort

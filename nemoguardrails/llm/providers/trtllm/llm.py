@@ -21,8 +21,8 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from langchain.callbacks.manager import CallbackManagerForLLMRun
-from langchain.llms.base import LLM
-from langchain.pydantic_v1 import Field, root_validator
+from langchain_core.language_models.llms import BaseLLM
+from pydantic.v1 import Field, root_validator
 
 from nemoguardrails.llm.providers.trtllm.client import TritonClient
 
@@ -31,7 +31,7 @@ BAD_WORDS = [""]
 RANDOM_SEED = 0
 
 
-class TRTLLM(LLM):
+class TRTLLM(BaseLLM):
     """A custom Langchain LLM class that integrates with TRTLLM triton models.
 
     Arguments:
@@ -61,7 +61,7 @@ class TRTLLM(LLM):
     client: Any
     streaming: Optional[bool] = True
 
-    @root_validator()
+    @root_validator(allow_reuse=True)
     @classmethod
     def validate_environment(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Validate that python package exists in environment."""

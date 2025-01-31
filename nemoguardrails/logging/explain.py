@@ -43,6 +43,7 @@ class LLMCallSummary(BaseModel):
 
 
 class LLMCallInfo(LLMCallSummary):
+    id: Optional[str] = Field(default=None, description="The unique prompt identifier.")
     prompt: Optional[str] = Field(
         default=None, description="The prompt that was used for the LLM call."
     )
@@ -53,6 +54,10 @@ class LLMCallInfo(LLMCallSummary):
         default=None,
         description="The raw response received from the LLM. "
         "May contain additional information, e.g. logprobs.",
+    )
+    llm_model_name: Optional[str] = Field(
+        default="unknown",
+        description="The name of the model use for the LLM call.",
     )
 
 

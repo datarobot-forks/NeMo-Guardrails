@@ -41,10 +41,8 @@ from nemoguardrails.colang.v2_x.lang.colang_ast import (
 )
 from nemoguardrails.colang.v2_x.runtime.errors import ColangSyntaxError
 from nemoguardrails.colang.v2_x.runtime.flows import FlowConfig, InternalEvents
-from nemoguardrails.colang.v2_x.runtime.utils import (
-    escape_special_string_characters,
-    new_var_uid,
-)
+from nemoguardrails.colang.v2_x.runtime.utils import escape_special_string_characters
+from nemoguardrails.utils import new_var_uuid
 
 
 def expand_elements(
@@ -71,6 +69,8 @@ def expand_elements(
                         expanded_elements = _expand_stop_element(element)
                     elif element.op == "activate":
                         expanded_elements = _expand_activate_element(element)
+                    elif element.op == "deactivate":
+                        expanded_elements = _expand_deactivate_element(element)
                     elif element.op == "await":
                         expanded_elements = _expand_await_element(element)
                 elif isinstance(element, Assignment):
@@ -144,17 +144,17 @@ def _expand_element_group(element: SpecOp) -> List[ElementType]:
                 )
     else:
         # Multiple and-groups
-        fork_uid: str = new_var_uid()
+        fork_uid: str = new_var_uuid()
         fork_element = ForkHead(fork_uid=fork_uid)
         group_label_elements: List[Label] = []
-        failure_label_name = f"failure_label_{new_var_uid()}"
+        failure_label_name = f"failure_label_{new_var_uuid()}"
         failure_label_element = Label(name=failure_label_name)
-        end_label_name = f"end_label_{new_var_uid()}"
+        end_label_name = f"end_label_{new_var_uuid()}"
         goto_end_element = Goto(label=end_label_name)
         end_label_element = Label(name=end_label_name)
 
         for group_idx, and_group in enumerate(normalized_group["elements"]):
-            group_label_name = f"group_{group_idx}_{new_var_uid()}"
+            group_label_name = f"group_{group_idx}_{new_var_uuid()}"
             group_label_elements.append(Label(name=group_label_name))
             fork_element.labels.append(group_label_name)
 
@@ -173,10 +173,12 @@ def _expand_element_group(element: SpecOp) -> List[ElementType]:
             new_elements.append(goto_end_element)
         new_elements.append(failure_label_element)
         new_elements.append(WaitForHeads(number=len(normalized_group["elements"])))
+        new_elements.append(MergeHeads(fork_uid=fork_uid))
         new_elements.append(CatchPatternFailure(label=None))
         new_elements.append(Abort())
         new_elements.append(end_label_element)
         new_elements.append(MergeHeads(fork_uid=fork_uid))
+        new_elements.append(CatchPatternFailure(label=None))
 
     return new_elements
 
@@ -190,7 +192,7 @@ def _expand_start_element(
         if element.spec.spec_type == SpecType.FLOW and element.spec.members is None:
             # It's a flow
             # $_instance_<uid> = (<flow_id>)<uid>
-            instance_uid_variable_name = f"_instance_uid_{new_var_uid()}"
+            instance_uid_variable_name = f"_instance_uid_{new_var_uuid()}"
             new_elements.append(
                 Assignment(
                     key=instance_uid_variable_name,
@@ -215,7 +217,7 @@ def _expand_start_element(
                 )
             )
             # match FlowStarted(...) as $_flow_event_ref
-            flow_event_ref_uid = f"_flow_event_ref_{new_var_uid()}"
+            flow_event_ref_uid = f"_flow_event_ref_{new_var_uuid()}"
             new_elements.append(
                 SpecOp(
                     op="match",
@@ -231,7 +233,7 @@ def _expand_start_element(
             # $flow_ref = $_flow_event_ref.flow
             element_ref = element.spec.ref
             if element_ref is None:
-                flow_ref_uid = f"_flow_ref_{new_var_uid()}"
+                flow_ref_uid = f"_flow_ref_{new_var_uuid()}"
                 element_ref = _create_ref_ast_dict_helper(flow_ref_uid)
             assert isinstance(element_ref, dict)
             new_elements.append(
@@ -244,7 +246,7 @@ def _expand_start_element(
             # It's an UMIM action
             element_ref = element.spec.ref
             if element_ref is None:
-                action_event_ref_uid = f"_action_ref_{new_var_uid()}"
+                action_event_ref_uid = f"_action_ref_{new_var_uuid()}"
                 element_ref = _create_ref_ast_dict_helper(action_event_ref_uid)
                 element.spec.ref = element_ref
             assert isinstance(element_ref, dict)
@@ -376,7 +378,7 @@ def _expand_match_element(
                 element_ref = element.spec.ref
                 if element_ref is None:
                     element_ref = _create_ref_ast_dict_helper(
-                        f"_event_ref_{new_var_uid()}"
+                        f"_event_ref_{new_var_uuid()}"
                     )
                 assert isinstance(element_ref, dict)
 
@@ -401,64 +403,95 @@ def _expand_match_element(
         # Element group
         normalized_group = normalize_element_groups(element.spec)
 
-        if (
-            len(normalized_group["elements"]) == 1
-            and len(normalized_group["elements"][0]["elements"]) == 1
-        ):
-            # Only one and-group with a single element
-            new_elements.append(
-                SpecOp(
-                    op=element.op,
-                    spec=normalized_group["elements"][0]["elements"][0],
+        if len(normalized_group["elements"]) == 1:
+            # Single and-group
+            if len(normalized_group["elements"][0]["elements"]) == 1:
+                # and-group with a single element
+                new_elements.append(
+                    SpecOp(
+                        op=element.op,
+                        spec=normalized_group["elements"][0]["elements"][0],
+                    )
                 )
-            )
+            else:
+                # and-group with multiple elements
+                fork_uid: str = new_var_uuid()
+                fork_element = ForkHead(fork_uid=fork_uid)
+                event_label_elements: List[Label] = []
+                failure_label_name = f"failure_label_{new_var_uuid()}"
+                failure_label_element = Label(name=failure_label_name)
+                end_label_name = f"end_label_{new_var_uuid()}"
+                goto_end_element = Goto(label=end_label_name)
+                end_label_element = Label(name=end_label_name)
+
+                and_group = normalized_group["elements"][0]
+                for element_idx, _ in enumerate(and_group["elements"]):
+                    element_label_name = f"event_{element_idx}_{new_var_uuid()}"
+                    event_label_elements.append(Label(name=element_label_name))
+                    fork_element.labels.append(element_label_name)
+
+                new_elements.append(CatchPatternFailure(label=failure_label_name))
+                new_elements.append(fork_element)
+
+                for idx, element in enumerate(and_group["elements"]):
+                    new_elements.append(event_label_elements[idx])
+                    new_elements.append(
+                        SpecOp(
+                            op="match",
+                            spec=element,
+                        )
+                    )
+                    new_elements.append(goto_end_element)
+
+                new_elements.append(failure_label_element)
+                new_elements.append(MergeHeads(fork_uid=fork_uid))
+                new_elements.append(CatchPatternFailure(label=None))
+                new_elements.append(Abort())
+
+                new_elements.append(end_label_element)
+                new_elements.append(WaitForHeads(number=len(and_group["elements"])))
+                new_elements.append(MergeHeads(fork_uid=fork_uid))
+                new_elements.append(CatchPatternFailure(label=None))
+
         else:
-            fork_uid: str = new_var_uid()
+            # Multiple and-groups combined by or
+            fork_uid: str = new_var_uuid()
             fork_element = ForkHead(fork_uid=fork_uid)
-            event_label_elements: List[Label] = []
-            event_match_elements: List[SpecOp] = []
-            goto_group_elements: List[Goto] = []
             group_label_elements: List[Label] = []
-            wait_for_heads_elements: List[WaitForHeads] = []
-            end_label_name = f"end_label_{new_var_uid()}"
+            failure_label_name = f"failure_label_{new_var_uuid()}"
+            failure_label_element = Label(name=failure_label_name)
+            end_label_name = f"end_label_{new_var_uuid()}"
             goto_end_element = Goto(label=end_label_name)
             end_label_element = Label(name=end_label_name)
 
-            element_idx = 0
-            for group_idx, and_group in enumerate(normalized_group["elements"]):
-                group_label_name = f"group_{group_idx}_{new_var_uid()}"
+            or_group = normalized_group["elements"]
+            for group_idx, _ in enumerate(or_group):
+                group_label_name = f"group_{group_idx}_{new_var_uuid()}"
                 group_label_elements.append(Label(name=group_label_name))
-                goto_group_elements.append(Goto(label=group_label_name))
-                wait_for_heads_elements.append(
-                    WaitForHeads(number=len(and_group["elements"]))
-                )
+                fork_element.labels.append(group_label_name)
 
-                for match_element in and_group["elements"]:
-                    label_name = f"event_{element_idx}_{new_var_uid()}"
-                    event_label_elements.append(Label(name=label_name))
-                    fork_element.labels.append(label_name)
-                    event_match_elements.append(
-                        SpecOp(
-                            op="match",
-                            spec=match_element,
-                        ),
-                    )
-                    element_idx += 1
-
-            # Generate new element sequence
-            element_idx = 0
+            new_elements.append(CatchPatternFailure(label=failure_label_name))
             new_elements.append(fork_element)
-            for group_idx, and_group in enumerate(normalized_group["elements"]):
-                for match_element in and_group["elements"]:
-                    new_elements.append(event_label_elements[element_idx])
-                    new_elements.append(event_match_elements[element_idx])
-                    new_elements.append(goto_group_elements[group_idx])
-                    element_idx += 1
-                new_elements.append(group_label_elements[group_idx])
-                new_elements.append(wait_for_heads_elements[group_idx])
-                new_elements.append(MergeHeads(fork_uid=fork_uid))
+
+            for idx, group_element in enumerate(or_group):
+                new_elements.append(group_label_elements[idx])
+                new_elements.append(
+                    SpecOp(
+                        op="match",
+                        spec=group_element,
+                    )
+                )
                 new_elements.append(goto_end_element)
+
+            new_elements.append(failure_label_element)
+            new_elements.append(WaitForHeads(number=len(or_group)))
+            new_elements.append(MergeHeads(fork_uid=fork_uid))
+            new_elements.append(CatchPatternFailure(label=None))
+            new_elements.append(Abort())
+
             new_elements.append(end_label_element)
+            new_elements.append(MergeHeads(fork_uid=fork_uid))
+            new_elements.append(CatchPatternFailure(label=None))
 
     else:
         raise ColangSyntaxError(f"Unknown element type '{type(element.spec)}'")
@@ -479,7 +512,7 @@ def _expand_await_element(
             # It's a flow or an UMIM action
             element_ref = element.spec.ref
             if element_ref is None:
-                element_ref = _create_ref_ast_dict_helper(f"_ref_{new_var_uid()}")
+                element_ref = _create_ref_ast_dict_helper(f"_ref_{new_var_uuid()}")
             assert isinstance(element_ref, dict)
 
             element.spec.ref = element_ref
@@ -508,23 +541,23 @@ def _expand_await_element(
         # Element group
         normalized_group = normalize_element_groups(element.spec)
 
-        fork_uid: str = new_var_uid()
+        fork_uid: str = new_var_uuid()
         fork_element = ForkHead(fork_uid=fork_uid)
         group_label_elements: List[Label] = []
-        scope_name = f"scope_{new_var_uid()}"
+        scope_name = f"scope_{new_var_uuid()}"
         begin_scope_element = BeginScope(name=scope_name)
         end_scope_element = EndScope(name=scope_name)
         start_elements: List[List[SpecOp]] = []
         match_elements: List[List[Spec]] = []
         assignment_elements: List[List[Assignment]] = []
-        failure_label_name = f"failure_label_{new_var_uid()}"
+        failure_label_name = f"failure_label_{new_var_uuid()}"
         failure_label_element = Label(name=failure_label_name)
-        end_label_name = f"end_label_{new_var_uid()}"
+        end_label_name = f"end_label_{new_var_uuid()}"
         goto_end_element = Goto(label=end_label_name)
         end_label_element = Label(name=end_label_name)
 
         for group_idx, and_group in enumerate(normalized_group["elements"]):
-            group_label_name = f"group_{group_idx}_{new_var_uid()}"
+            group_label_name = f"group_{group_idx}_{new_var_uuid()}"
             group_label_elements.append(Label(name=group_label_name))
 
             fork_element.labels.append(group_label_name)
@@ -533,7 +566,7 @@ def _expand_await_element(
             assignment_elements.append([])
             for group_element in and_group["elements"]:
                 group_element_copy = copy.deepcopy(group_element)
-                temp_element_ref = f"_ref_{new_var_uid()}"
+                temp_element_ref = f"_ref_{new_var_uuid()}"
 
                 group_element_copy.ref = _create_ref_ast_dict_helper(temp_element_ref)
                 start_elements[-1].append(
@@ -609,7 +642,7 @@ def _expand_activate_element(
         if element.spec.spec_type == SpecType.FLOW and element.spec.members is None:
             # It's a flow
             # $_instance_<uid> = (<flow_id>)<uid>
-            instance_uid_variable_name = f"_instance_uid_{new_var_uid()}"
+            instance_uid_variable_name = f"_instance_uid_{new_var_uuid()}"
             new_elements.append(
                 Assignment(
                     key=instance_uid_variable_name,
@@ -663,11 +696,55 @@ def _expand_activate_element(
         # Multiple match elements
         normalized_group = normalize_element_groups(element.spec)
         if len(normalized_group["elements"]) > 1:
-            raise NotImplementedError("Activating 'or' groups not implemented yet!")
+            raise NotImplementedError("Activating 'or' groups not supported yet!")
         for group_element in normalized_group["elements"][0]["elements"]:
             new_elements.append(
                 SpecOp(
                     op="activate",
+                    spec=group_element,
+                )
+            )
+
+    return new_elements
+
+
+def _expand_deactivate_element(
+    element: SpecOp,
+) -> List[ElementType]:
+    new_elements: List[ElementType] = []
+    if isinstance(element.spec, Spec):
+        # Single element
+        if element.spec.spec_type == SpecType.FLOW and element.spec.members is None:
+            # It's a flow
+            # send StopFlow(flow_id=<flow_id>)
+            new_elements.append(
+                SpecOp(
+                    op="send",
+                    spec=Spec(
+                        name=InternalEvents.STOP_FLOW,
+                        arguments={
+                            "flow_id": f"'{element.spec.name}'",
+                            "deactivate": True,
+                            **element.spec.arguments,
+                        },
+                        spec_type=SpecType.EVENT,
+                    ),
+                )
+            )
+        else:
+            # It's an UMIM event
+            raise ColangSyntaxError(
+                f"Only flows can be deactivated but not '{element.spec.spec_type}', element '{element.spec.name}'"
+            )
+    elif isinstance(element.spec, dict):
+        # Multiple elements
+        normalized_group = normalize_element_groups(element.spec)
+        if len(normalized_group["elements"]) > 1:
+            raise NotImplementedError("Deactivating 'or' groups not supported yet!")
+        for group_element in normalized_group["elements"][0]["elements"]:
+            new_elements.append(
+                SpecOp(
+                    op="deactivate",
                     spec=group_element,
                 )
             )
@@ -708,7 +785,7 @@ def _expand_while_stmt_element(
 ) -> List[ElementType]:
     new_elements: List[ElementType] = []
 
-    label_uid = new_var_uid()
+    label_uid = new_var_uuid()
     begin_label = Label(name=f"_while_begin_{label_uid}")
     end_label = Label(name=f"_while_end_{label_uid}")
     goto_end = Goto(
@@ -735,8 +812,8 @@ def _expand_if_element(
 ) -> List[ElementType]:
     elements: List[ElementType] = []
 
-    if_else_body_label_name = f"if_else_body_label_{new_var_uid()}"
-    if_end_label_name = f"if_end_label_{new_var_uid()}"
+    if_else_body_label_name = f"if_else_body_label_{new_var_uuid()}"
+    if_end_label_name = f"if_end_label_{new_var_uuid()}"
 
     # TODO: optimize for cases when the else section is missing
     elements.append(
@@ -764,10 +841,10 @@ def _expand_if_element(
 def _expand_when_stmt_element(
     element: When, flow_configs: Dict[str, FlowConfig]
 ) -> List[ElementType]:
-    stmt_uid = new_var_uid()
+    stmt_uid = new_var_uuid()
 
     init_case_label_names: List[str] = []
-    cases_fork_uid: str = new_var_uid()
+    cases_fork_uid: str = new_var_uuid()
     cases_fork_head_element = ForkHead(fork_uid=cases_fork_uid)
     groups_fork_head_elements: List[ForkHead] = []
     failure_case_label_names: List[str] = []
@@ -787,7 +864,7 @@ def _expand_when_stmt_element(
         cases_fork_head_element.labels.append(init_case_label_names[case_idx])
         failure_case_label_names.append(f"failure_case_{case_uid}_label_{stmt_uid}")
         case_label_names.append(f"case_{case_uid}_label_{stmt_uid}")
-        groups_fork_head_elements.append(ForkHead(fork_uid=new_var_uid()))
+        groups_fork_head_elements.append(ForkHead(fork_uid=new_var_uuid()))
 
         case_element_dict: dict
         if isinstance(case_element, Spec):
@@ -827,7 +904,7 @@ def _expand_when_stmt_element(
                     or group_element.spec_type == SpecType.ACTION
                 ) and group_element.members is None:
                     # Add start element
-                    temp_ref_uid = f"_ref_{new_var_uid()}"
+                    temp_ref_uid = f"_ref_{new_var_uuid()}"
                     if group_element.ref is not None:
                         ref_uid = group_element.ref["elements"][0]["elements"][
                             0

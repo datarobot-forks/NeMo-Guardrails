@@ -57,6 +57,56 @@ def test_send_umim_action_event():
     )
 
 
+def test_send_umim_action_event_overwriting_default_parameters():
+    """Test to send an UMIM event but overwrite default parameters."""
+
+    content = """
+    flow main
+      $fixed_timestamp = "2024-10-22T12:08:18.874224"
+      $uid = "1234"
+      send UtteranceBotActionFinished(final_script="Hello world", action_finished_at=$fixed_timestamp, action_uid=$uid, is_success=True)
+    """
+
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "UtteranceBotActionFinished",
+                "final_script": "Hello world",
+                "action_uid": "1234",
+                "action_finished_at": "2024-10-22T12:08:18.874224",
+            }
+        ],
+    )
+
+
+def test_change_umim_event_source_id():
+    """Test to send an UMIM event."""
+
+    content = """
+    flow main
+      send StartUtteranceBotAction(script="Hello world")
+    """
+
+    config = """
+    colang_version: "2.x"
+    event_source_uid : agent-1
+    """
+
+    state = run_to_completion(_init_state(content, config), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Hello world",
+                "source_uid": "agent-1",
+            }
+        ],
+    )
+
+
 def test_match_umim_action_event():
     """Test to match an UMIM event."""
 
@@ -261,6 +311,116 @@ def test_start_mismatch_action_on_event_parameter():
     assert is_data_in_events(
         state.outgoing_events,
         [],
+    )
+
+
+def test_event_match_group():
+    """Test mixed and/or event match groups."""
+
+    content = """
+    flow a
+      start b as $ref_b and c as $ref_c
+      match ($ref_b.Finished() and $ref_c.Finished()) or ($ref_b.Failed() and $ref_c.Failed())
+      start UtteranceBotAction(script="Hello world")
+
+    flow b
+      match WaitEvent()
+
+    flow c
+      match WaitEvent()
+
+    flow main
+      activate a
+      match Event1()
+      send FinishFlow(flow_id="b")
+      match Event2()
+      send StopFlow(flow_id="c")
+      match Event1()
+      send StopFlow(flow_id="b")
+      match Event2()
+      send StopFlow(flow_id="c")
+      match WaitEvent()
+    """
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event1",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event2",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event1",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event2",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Hello world",
+            },
+            {
+                "type": "StopUtteranceBotAction",
+            },
+        ],
+    )
+
+
+def test_finished_or_failed_flow_event_match():
+    """Test matching to the finished and failed event of a flow in a single or group."""
+
+    content = """
+    flow a
+      start b as $ref
+      match $ref.Finished() or $ref.Failed()
+      await UtteranceBotAction(script="Hello world")
+
+    flow b
+      match WaitEvent()
+
+    flow main
+      start a
+      send StopFlow(flow_id="b")
+    """
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Hello world",
+            }
+        ],
     )
 
 
@@ -1533,5 +1693,52 @@ def test_runtime_exception_handling_2():
     )
 
 
+def test_user_message_generates_started_and_finished():
+    """Test queuing of action events."""
+    config = RailsConfig.from_content(
+        colang_content="""
+        flow main
+          match UtteranceUserActionStarted()
+          match UtteranceUserActionFinished(final_transcript="yes")
+          start UtteranceBotAction(script="ok")
+        """,
+        yaml_content="""
+        colang_version: "2.x"
+        """,
+    )
+
+    chat = TestChat(
+        config,
+        llm_completions=[],
+    )
+
+    chat >> "yes"
+    chat << "ok"
+
+
+def test_handling_arbitrary_events_through_test_chat():
+    """Test queuing of action events."""
+    config = RailsConfig.from_content(
+        colang_content="""
+        flow main
+          match CustomEvent(name="test")
+          match EventA()
+          start UtteranceBotAction(script="started")
+        """,
+        yaml_content="""
+        colang_version: "2.x"
+        """,
+    )
+
+    chat = TestChat(
+        config,
+        llm_completions=[],
+    )
+
+    chat >> {"type": "CustomEvent", "name": "test"}
+    chat >> {"type": "EventA"}
+    chat << "started"
+
+
 if __name__ == "__main__":
-    test_runtime_exception_handling_2()
+    test_event_match_group()

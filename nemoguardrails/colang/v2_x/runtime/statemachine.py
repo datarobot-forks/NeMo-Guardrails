@@ -71,8 +71,8 @@ from nemoguardrails.colang.v2_x.runtime.flows import (
     InternalEvents,
     State,
 )
-from nemoguardrails.colang.v2_x.runtime.utils import new_readable_uid
-from nemoguardrails.utils import console, new_event_dict, new_uuid
+from nemoguardrails.rails.llm.config import RailsConfig
+from nemoguardrails.utils import console, new_event_dict, new_readable_uuid, new_uuid
 
 log = logging.getLogger(__name__)
 
@@ -103,11 +103,12 @@ def initialize_state(state: State) -> None:
     # Create main flow state first
     main_flow_config = state.flow_configs["main"]
     main_flow = add_new_flow_instance(
-        state, create_flow_instance(main_flow_config, new_readable_uid("main"), "0", {})
+        state,
+        create_flow_instance(main_flow_config, new_readable_uuid("main"), "0", {}),
     )
     main_flow.activated = 1
     if main_flow_config.loop_id is None:
-        main_flow.loop_id = new_readable_uid("main")
+        main_flow.loop_id = new_readable_uuid("main")
     else:
         main_flow.loop_id = main_flow_config.loop_id
     state.main_flow_state = main_flow
@@ -296,7 +297,7 @@ def run_to_completion(state: State, external_event: Union[dict, Event]) -> State
                 # Find all active interaction loops
                 active_interaction_loops = set()
                 for flow_state in state.flow_states.values():
-                    if _is_listening_flow(flow_state):
+                    if is_listening_flow(flow_state):
                         active_interaction_loops.add(flow_state.loop_id)
 
                 # TODO: Check if we should rather should do this after the event matching step
@@ -421,7 +422,7 @@ def run_to_completion(state: State, external_event: Union[dict, Event]) -> State
         actionable_heads = [
             head
             for head in actionable_heads
-            if _is_active_flow(get_flow_state_from_head(state, head))
+            if is_active_flow(get_flow_state_from_head(state, head))
             and head.status == FlowHeadStatus.ACTIVE
         ]
 
@@ -542,57 +543,77 @@ def _process_internal_events_without_default_matchers(
                 )
 
     elif event.name == InternalEvents.FINISH_FLOW:
+        # Extract flow parameters
+        arguments = dict(event.arguments)
+
         if "flow_instance_uid" in event.arguments:
             flow_instance_uid = event.arguments["flow_instance_uid"]
             if flow_instance_uid in state.flow_states:
                 flow_state = state.flow_states[event.arguments["flow_instance_uid"]]
-                if not _is_inactive_flow(flow_state):
+                if not is_inactive_flow(flow_state):
                     _finish_flow(
-                        state,
-                        flow_state,
-                        event.matching_scores,
+                        state=state,
+                        flow_state=flow_state,
+                        matching_scores=event.matching_scores,
+                        context_update=arguments.get("context_update", None),
                     )
                     assert flow_state.loop_id
                     handled_event_loops.add(flow_state.loop_id)
         elif "flow_id" in event.arguments:
-            flow_id = event.arguments["flow_id"]
+            flow_id = arguments.pop("flow_id", None)
+            deactivate = arguments.pop("deactivate", False)
+            context_update = arguments.pop("context_update", None)
+            arguments.pop("source_flow_instance_uid", None)
+            arguments.pop("source_head_uid", None)
             if flow_id in state.flow_id_states:
                 for flow_state in state.flow_id_states[flow_id]:
-                    deactivate = event.arguments.get("deactivate", False)
-                    _finish_flow(
-                        state,
-                        flow_state,
-                        event.matching_scores,
-                        deactivate,
-                    )
-                    assert flow_state.loop_id
-                    handled_event_loops.add(flow_state.loop_id)
+                    if arguments.items() <= flow_state.arguments.items():
+                        _finish_flow(
+                            state=state,
+                            flow_state=flow_state,
+                            matching_scores=event.matching_scores,
+                            deactivate_flow=deactivate,
+                            context_update=context_update,
+                        )
+                        assert flow_state.loop_id
+                        handled_event_loops.add(flow_state.loop_id)
     elif event.name == InternalEvents.STOP_FLOW:
+        arguments = dict(event.arguments)
+
         if "flow_instance_uid" in event.arguments:
             flow_instance_uid = event.arguments["flow_instance_uid"]
             if flow_instance_uid in state.flow_states:
                 flow_state = state.flow_states[flow_instance_uid]
-                if not _is_inactive_flow(flow_state):
+                if not is_inactive_flow(flow_state):
                     _abort_flow(
                         state=state,
                         flow_state=flow_state,
                         matching_scores=event.matching_scores,
                         deactivate_flow=flow_state.activated > 0,
+                        context_update=arguments.get("context_update", None),
                     )
                     assert flow_state.loop_id
                     handled_event_loops.add(flow_state.loop_id)
         elif "flow_id" in event.arguments:
-            flow_id = event.arguments["flow_id"]
+            # Extract flow parameters
+
+            flow_id = arguments.pop("flow_id", None)
+            deactivate = arguments.pop("deactivate", False)
+            arguments.pop("source_flow_instance_uid", None)
+            arguments.pop("source_head_uid", None)
+            context_update = arguments.pop("context_update", None)
             if flow_id in state.flow_id_states:
                 for flow_state in state.flow_id_states[flow_id]:
-                    _abort_flow(
-                        state=state,
-                        flow_state=flow_state,
-                        matching_scores=event.matching_scores,
-                        deactivate_flow=flow_state.activated > 0,
-                    )
-                    assert flow_state.loop_id
-                    handled_event_loops.add(flow_state.loop_id)
+                    if arguments.items() <= flow_state.arguments.items():
+                        _abort_flow(
+                            state=state,
+                            flow_state=flow_state,
+                            matching_scores=event.matching_scores,
+                            deactivate_flow=deactivate,
+                            context_update=context_update,
+                        )
+                        assert flow_state.loop_id
+                        handled_event_loops.add(flow_state.loop_id)
         # TODO: Add support for all flow instances of same flow with "flow_id"
     # elif event.name == "ResumeFlow":
     #     pass
@@ -640,8 +661,11 @@ def _get_reference_activated_flow_instance(
                 f"${idx}" in event.arguments and val == event.arguments[f"${idx}"]
             )
             # Default flow parameters
-            matched |= arg.default_value_expr is not None and val == eval_expression(
-                arg.default_value_expr, {}
+            matched |= (
+                arg.name not in event.arguments
+                and f"${idx}" not in event.arguments
+                and arg.default_value_expr is not None
+                and val == eval_expression(arg.default_value_expr, {})
             )
 
             if not matched:
@@ -679,10 +703,13 @@ def _get_all_head_candidates(state: State, event: Event) -> List[Tuple[str, str]
             state.event_matching_heads.get(InternalEvents.FLOW_FINISHED, [])
         )
 
-    # Ensure that event order is related to flow hierarchy
+    # Ensure that event order is related to interaction loop priority and secondly the flow hierarchy
     sorted_head_candidates = sorted(
         head_candidates,
-        key=lambda s: state.flow_states[s[0]].hierarchy_position,
+        key=lambda s: (
+            -1 * state.flow_configs[state.flow_states[s[0]].flow_id].loop_priority,
+            state.flow_states[s[0]].hierarchy_position,
+        ),
     )
 
     return sorted_head_candidates
@@ -866,7 +893,7 @@ def _advance_head_front(state: State, heads: List[FlowHead]) -> List[FlowHead]:
         flow_state = get_flow_state_from_head(state, head)
         flow_config = get_flow_config_from_head(state, head)
 
-        if head.status == FlowHeadStatus.INACTIVE or not _is_listening_flow(flow_state):
+        if head.status == FlowHeadStatus.INACTIVE or not is_listening_flow(flow_state):
             continue
         elif head.status == FlowHeadStatus.MERGING and len(state.internal_events) > 0:
             # We only advance merging heads if all internal events were processed
@@ -1226,19 +1253,14 @@ def slide(
                 break
 
         elif isinstance(element, Assignment):
-            # Check if we have a conflict with flow attribute
-            if element.key in flow_state.__dict__:
-                warning = f"Reserved flow attribute name '{element.key}' cannot be used as variable!"
-                log.warning(warning)
+            # We need to first evaluate the expression
+            expr_val = eval_expression(
+                element.expression, _get_eval_context(state, flow_state)
+            )
+            if f"_global_{element.key}" in flow_state.context:
+                state.context.update({element.key: expr_val})
             else:
-                # We need to first evaluate the expression
-                expr_val = eval_expression(
-                    element.expression, _get_eval_context(state, flow_state)
-                )
-                if f"_global_{element.key}" in flow_state.context:
-                    state.context.update({element.key: expr_val})
-                else:
-                    flow_state.context.update({element.key: expr_val})
+                flow_state.context.update({element.key: expr_val})
             head.position += 1
 
         elif isinstance(element, Return):
@@ -1325,7 +1347,7 @@ def slide(
                 # TODO: This should not be needed if states would be cleaned-up correctly
                 if flow_uid in state.flow_states:
                     child_flow_state = state.flow_states[flow_uid]
-                    if _is_listening_flow(child_flow_state):
+                    if is_listening_flow(child_flow_state):
                         _abort_flow(state, child_flow_state, head.matching_scores)
             for action_uid in action_uids:
                 action = state.actions[action_uid]
@@ -1404,6 +1426,7 @@ def _abort_flow(
     flow_state: FlowState,
     matching_scores: List[float],
     deactivate_flow: bool = False,
+    context_update: Optional[dict] = None,
 ) -> None:
     """Abort a flow instance and all its active child flows and decrement number of references of activated flow."""
 
@@ -1425,7 +1448,7 @@ def _abort_flow(
         else:
             return
 
-    if not _is_listening_flow(flow_state) and flow_state.status != FlowStatus.STOPPING:
+    if not is_listening_flow(flow_state) and flow_state.status != FlowStatus.STOPPING:
         # Skip the rest for all inactive flows
         return
 
@@ -1467,6 +1490,10 @@ def _abort_flow(
 
     flow_state.status = FlowStatus.STOPPED
 
+    # Update context if needed
+    if context_update:
+        flow_state.context.update(context_update)
+
     # Generate FlowFailed event
     event = flow_state.failed_event(matching_scores)
     _push_internal_event(state, event)
@@ -1499,6 +1526,7 @@ def _finish_flow(
     flow_state: FlowState,
     matching_scores: List[float],
     deactivate_flow: bool = False,
+    context_update: Optional[dict] = None,
 ) -> None:
     """Finish a flow instance and all its active child flows and decrement number of references of activated flow."""
 
@@ -1519,7 +1547,7 @@ def _finish_flow(
         else:
             return
 
-    if not _is_listening_flow(flow_state):
+    if not is_listening_flow(flow_state):
         # Skip the rest for all inactive flows
         return
 
@@ -1582,6 +1610,10 @@ def _finish_flow(
         and flow_state.parent_uid in state.flow_states
     ):
         state.flow_states[flow_state.parent_uid].child_flow_uids.remove(flow_state.uid)
+
+    # Update context if needed
+    if context_update:
+        flow_state.context.update(context_update)
 
     # Generate FlowFinished event
     event = flow_state.finished_event(matching_scores)
@@ -1730,7 +1762,7 @@ def _flow_head_changed(state: State, flow_state: FlowState, head: FlowHead) -> N
     if (
         element is not None
         and head.status is not FlowHeadStatus.INACTIVE
-        and _is_listening_flow(flow_state)
+        and is_listening_flow(flow_state)
         and is_match_op_element(element)
     ):
         _add_head_to_event_matching_structures(state, flow_state, head)
@@ -1770,7 +1802,7 @@ def _remove_head_from_event_matching_structures(
 
 def _update_action_status_by_event(state: State, event: ActionEvent) -> None:
     for flow_state in state.flow_states.values():
-        if not _is_listening_flow(flow_state):
+        if not is_listening_flow(flow_state):
             # Don't process flows that are not active
             continue
 
@@ -1782,7 +1814,8 @@ def _update_action_status_by_event(state: State, event: ActionEvent) -> None:
                     action.process_event(event)
 
 
-def _is_listening_flow(flow_state: FlowState) -> bool:
+def is_listening_flow(flow_state: FlowState) -> bool:
+    """True if flow is started or waiting to be started."""
     return (
         flow_state.status == FlowStatus.WAITING
         or flow_state.status == FlowStatus.STARTED
@@ -1790,14 +1823,16 @@ def _is_listening_flow(flow_state: FlowState) -> bool:
     )
 
 
-def _is_active_flow(flow_state: FlowState) -> bool:
+def is_active_flow(flow_state: FlowState) -> bool:
+    """True if flow has started."""
     return (
         flow_state.status == FlowStatus.STARTED
         or flow_state.status == FlowStatus.STARTING
     )
 
 
-def _is_inactive_flow(flow_state: FlowState) -> bool:
+def is_inactive_flow(flow_state: FlowState) -> bool:
+    """True if flow is not started."""
     return (
         flow_state.status == FlowStatus.WAITING
         or flow_state.status == FlowStatus.STOPPED
@@ -1813,7 +1848,7 @@ def _is_done_flow(flow_state: FlowState) -> bool:
 
 
 def _generate_umim_event(state: State, event: Event) -> Dict[str, Any]:
-    umim_event = create_umim_event(event, event.arguments)
+    umim_event = create_umim_event(event, event.arguments, state.rails_config)
     state.outgoing_events.append(umim_event)
     log.info("[bold violet]<- Action[/]: %s", event)
 
@@ -2030,7 +2065,7 @@ def find_all_active_event_matchers(
     """Return a list of all active heads that point to an event 'match' element."""
     event_matchers: List[FlowHead] = []
     for flow_state in state.flow_states.values():
-        if not _is_active_flow(flow_state) or not _is_listening_flow(flow_state):
+        if not is_active_flow(flow_state) or not is_listening_flow(flow_state):
             continue
 
         flow_config = state.flow_configs[flow_state.flow_id]
@@ -2369,10 +2404,14 @@ def create_internal_event(
     return event
 
 
-def create_umim_event(event: Event, event_args: Dict[str, Any]) -> Dict[str, Any]:
+def create_umim_event(
+    event: Event, event_args: Dict[str, Any], config: Optional[RailsConfig]
+) -> Dict[str, Any]:
     """Returns an outgoing UMIM event for the provided action data"""
     new_event_args = dict(event_args)
-    new_event_args["source_uid"] = "NeMoGuardrails-Colang-2.x"
+    new_event_args.setdefault(
+        "source_uid", config.event_source_uid if config else "NeMoGuardrails-Colang-2.x"
+    )
     if isinstance(event, ActionEvent) and event.action_uid is not None:
         if "action_uid" in new_event_args:
             event.action_uid = new_event_args["action_uid"]
@@ -2389,7 +2428,7 @@ def _get_eval_context(state: State, flow_state: FlowState) -> dict:
         if var.startswith("_global_"):
             context.update({var: state.context[var[8:]]})
     # Add state as _state
-    context.update({"_state": state})
+    context.update({"system": {"state": state, "config": state.rails_config}})
     context.update({"self": flow_state})
     return context
 
@@ -2406,5 +2445,7 @@ def _is_child_activated_flow(state: State, flow_state: FlowState) -> bool:
     return (
         flow_state.activated > 0
         and flow_state.parent_uid is not None
+        and flow_state.parent_uid
+        in state.flow_states  # TODO: Figure out why this can fail sometimes
         and flow_state.flow_id == state.flow_states[flow_state.parent_uid].flow_id
     )

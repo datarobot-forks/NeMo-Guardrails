@@ -20,34 +20,44 @@ and registers them.
 
 Additional providers can be registered using the `register_llm_provider` function.
 """
+
 import asyncio
 import logging
+import warnings
+from importlib.metadata import version
 from typing import Any, Dict, List, Optional, Type
 
-from langchain.base_language import BaseLanguageModel
 from langchain.callbacks.manager import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
-from langchain.llms.base import LLM
 from langchain.schema.output import GenerationChunk
 from langchain_community import llms
 from langchain_community.llms import HuggingFacePipeline
+from langchain_core.language_models.llms import BaseLLM
 
 from nemoguardrails.rails.llm.config import Model
 
 from .nemollm import NeMoLLM
 from .trtllm.llm import TRTLLM
 
+# NOTE: this is temp
+# Suppress specific warnings related to protected namespaces in Pydantic models, they must update their code.
+warnings.filterwarnings(
+    "ignore",
+    message=r'Field "model_.*" in .* has conflict with protected namespace "model_"',
+    category=UserWarning,
+    module=r"pydantic\._internal\._fields",
+)
 log = logging.getLogger(__name__)
 
-# Initialize the providers with the default ones, for now only NeMo LLM.
+# Initialize the providers with the default ones
 # We set nvidia_ai_endpoints provider to None because it's only supported if `langchain_nvidia_ai_endpoints` is installed.
-_providers: Dict[str, Type[BaseLanguageModel]] = {
+_providers: Dict[str, Optional[Type[BaseLLM]]] = {
     "nemollm": NeMoLLM,
     "trt_llm": TRTLLM,
     "nvidia_ai_endpoints": None,
-    "nim": None,
+    "nim": None,  # Later patched to "nvidia_ai_endpoints" (synonymous).
 }
 
 
@@ -190,7 +200,7 @@ def discover_langchain_providers():
         # If the "_acall" method is not defined, we add it.
         if (
             provider_cls
-            and issubclass(provider_cls, LLM)
+            and issubclass(provider_cls, BaseLLM)
             and "_acall" not in provider_cls.__dict__
         ):
             log.debug("Adding async support to %s", provider_cls.__name__)
@@ -201,12 +211,12 @@ def discover_langchain_providers():
 discover_langchain_providers()
 
 
-def register_llm_provider(name: str, provider_cls: Type[BaseLanguageModel]):
+def register_llm_provider(name: str, provider_cls: Type[BaseLLM]):
     """Register an additional LLM provider."""
     _providers[name] = provider_cls
 
 
-def get_llm_provider(model_config: Model) -> Type[BaseLanguageModel]:
+def get_llm_provider(model_config: Model) -> Type[BaseLLM]:
     if model_config.engine not in _providers:
         raise RuntimeError(f"Could not find LLM provider '{model_config.engine}'")
 
@@ -240,9 +250,18 @@ def get_llm_provider(model_config: Model) -> Type[BaseLanguageModel]:
             )
     elif model_config.engine == "nvidia_ai_endpoints" or model_config.engine == "nim":
         try:
-            from langchain_nvidia_ai_endpoints import ChatNVIDIA
+            from ._langchain_nvidia_ai_endpoints_patch import ChatNVIDIA
 
+            # Check the version
+            package_version = version("langchain_nvidia_ai_endpoints")
+
+            if _parse_version(package_version) < (0, 2, 0):
+                raise ValueError(
+                    "langchain_nvidia_ai_endpoints version must be 0.2.0 or above."
+                    " Please upgrade it with `pip install langchain-nvidia-ai-endpoints --upgrade`."
+                )
             return ChatNVIDIA
+
         except ImportError:
             raise ImportError(
                 "Could not import langchain_nvidia_ai_endpoints, please install it with "
@@ -269,3 +288,7 @@ def get_llm_provider(model_config: Model) -> Type[BaseLanguageModel]:
 def get_llm_provider_names() -> List[str]:
     """Returns the list of supported LLM providers."""
     return list(sorted(list(_providers.keys())))
+
+
+def _parse_version(version_str):
+    return tuple(map(int, (version_str.split("."))))

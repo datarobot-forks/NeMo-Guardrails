@@ -595,6 +595,103 @@ def test_activate_flow_mechanism():
     )
 
 
+def test_deactivate_flow_mechanism():
+    """Test the deactivate a flow mechanism."""
+
+    content = """
+    flow a $text
+      start UtteranceBotAction(script=$text)
+      match UtteranceUserAction().Finished(final_transcript="Hi")
+      start UtteranceBotAction(script="End")
+
+    flow main
+      activate a "Start 1"
+      activate a "Start 2"
+      match Event1()
+      deactivate a "Start 1"
+      match WaitEvent()
+    """
+
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Start 1",
+            },
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Start 2",
+            },
+        ],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event1",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StopUtteranceBotAction",
+            }
+        ],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "UtteranceUserActionFinished",
+            "final_transcript": "Hi",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "End",
+            },
+            {
+                "type": "StopUtteranceBotAction",
+            },
+            {
+                "type": "StopUtteranceBotAction",
+            },
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "Start 2",
+            },
+        ],
+    )
+
+
+def test_activate_flows_with_default_parameters():
+    """Test the activation of flows with default parameters."""
+
+    content = """
+    flow a $param = 1.0
+      match Event1()
+
+    flow main
+      activate a 1.0
+      activate a 0.5
+      send SuccessEvent()
+    """
+
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "SuccessEvent",
+            },
+        ],
+    )
+
+
 def test_infinite_loops_avoidance_for_activate_flows():
     """Test that activated flows don't loop infinitely if not match statement is present."""
 
@@ -747,7 +844,7 @@ def test_stop_activated_flow_mechanism():
 
     flow main
       activate a
-      send StopFlow(flow_id="a")
+      send StopFlow(flow_id="a", deactivate=True)
       start UtteranceBotAction(script="End")
       match WaitAction().Finished()
     """
@@ -777,16 +874,16 @@ def test_finish_flow_event():
     content = """
     flow a
       await UtteranceBotAction(script="Hi")
+      return "failed"
 
     flow b
-      match a.Finished()
-      await UtteranceBotAction(script="Yes")
+      $result = await a
+      await UtteranceBotAction(script=$result)
 
     flow main
       start b
-      start a
       match UtteranceUserAction().Finished(final_transcript="Hi")
-      send FinishFlow(flow_id="a")
+      send FinishFlow(flow_id="a", context_update={"_return_value":"success"})
       match WaitAction().Finished()
     """
 
@@ -815,7 +912,67 @@ def test_finish_flow_event():
             },
             {
                 "type": "StartUtteranceBotAction",
-                "script": "Yes",
+                "script": "success",
+            },
+        ],
+    )
+
+
+def test_finish_flow_event_with_statement():
+    """Test the FinishFlow event that will immediately finish a flow."""
+
+    content = """
+    flow a -> $transcript
+        match UtteranceUserAction().Finished(final_transcript="a")
+        $transcript = "a_failed"
+
+    flow observe
+        when a as $ref
+            start UtteranceBotAction(script=$ref.transcript)
+
+    flow main
+        activate observe
+        match UtteranceUserAction().Finished(final_transcript="c")
+        send FinishFlow(flow_id="a", context_update={"transcript":"a_success"})
+        match WaitAction().Finished()
+    """
+
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    state = run_to_completion(
+        state,
+        {
+            "type": "UtteranceUserActionFinished",
+            "final_transcript": "a",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "a_failed",
+            },
+            {
+                "type": "StopUtteranceBotAction",
+            },
+        ],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "UtteranceUserActionFinished",
+            "final_transcript": "c",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {
+                "type": "StartUtteranceBotAction",
+                "script": "a_success",
+            },
+            {
+                "type": "StopUtteranceBotAction",
             },
         ],
     )
@@ -1413,6 +1570,70 @@ def test_interaction_loop_with_new():
                 "type": "StartGestureBotAction",
                 "script": "Smile 1",
             },
+        ],
+    )
+
+
+def test_interaction_loop_priorities():
+    """Test that processing order of interaction loops dependent on their priority."""
+
+    content = """
+    @loop("b", priority=5)
+    flow b
+      match Event1()
+      send EventB()
+
+    @loop("c", 1)
+    flow c
+      match Event1()
+      send EventC()
+
+    @loop(id="a", priority=10)
+    flow a
+      match Event2()
+      match Event1()
+      send EventA()
+
+    flow main
+      activate a and c and b
+    """
+
+    state = run_to_completion(_init_state(content), start_main_flow_event)
+    assert is_data_in_events(
+        state.outgoing_events,
+        [],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event1",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {"type": "EventB"},
+            {"type": "EventC"},
+        ],
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event2",
+        },
+    )
+    state = run_to_completion(
+        state,
+        {
+            "type": "Event1",
+        },
+    )
+    assert is_data_in_events(
+        state.outgoing_events,
+        [
+            {"type": "EventA"},
+            {"type": "EventB"},
+            {"type": "EventC"},
         ],
     )
 
@@ -2204,4 +2425,4 @@ def test_single_flow_activation_3():
 
 
 if __name__ == "__main__":
-    test_flow_started_matching()
+    test_finish_flow_event()

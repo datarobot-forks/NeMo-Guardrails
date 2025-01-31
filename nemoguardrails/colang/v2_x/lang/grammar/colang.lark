@@ -54,6 +54,7 @@ spec_operator: "match" -> match_spec
              | "start" -> start_spec
              | "stop" -> stop_spec
              | "activate" -> activate_spec
+             | "deactivate" -> deactivate_spec
              | "send" -> send_spec
 
 spec_op: spec_operator spec_expr
@@ -204,7 +205,7 @@ doc_string: LONG_STRING
 _FLOW.1: /(?<!\.)flow(?!(\s*\(|[a-zA-Z0-9_]))/
 
 _IF.1: /if/
-_ELSE_IF.1: /(elif|else\s+if)/
+_ELSE_IF.1: /(elif|else[^\S\r\n]+if)/
 _OR_WHEN.1: /(or ?when)/
 _AND.1: /(and[ \t]|(\r?\n[\t ]*)+and[ \t])/
 _OR.1: /(or[ \t]|(\r?\n[\t ]*)+or[ \t]+(?!when))/
