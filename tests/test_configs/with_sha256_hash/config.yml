@@ -1,0 +1,24 @@
+models:
+  - type: main
+    engine: openai
+    model: gpt-3.5-turbo-instruct
+
+core:
+  embedding_search_provider:
+    name: default
+    parameters:
+      embedding_engine: openai
+      embedding_model: text-embedding-ada-002
+    cache:
+      enabled: True
+      key_generator: sha256
+
+knowledge_base:
+  embedding_search_provider:
+    name: default
+    parameters:
+      embedding_engine: openai
+      embedding_model: text-embedding-ada-002
+    cache:
+      enabled: True
+      key_generator: sha256
