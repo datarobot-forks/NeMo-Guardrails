@@ -12,10 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from unittest.mock import patch
 
 import pytest
+from _hashlib import UnsupportedDigestmodError
 
-from nemoguardrails.utils import new_event_dict, safe_eval
+from nemoguardrails.utils import compute_hash, new_event_dict, safe_eval
 
 
 def test_event_generation():
@@ -144,3 +146,34 @@ def test_safe_eval(input_value, expected_result):
     """Test safe_eval with various input values."""
     result = safe_eval(input_value)
     assert result == expected_result
+
+
+@pytest.fixture
+def md5_is_missing():
+    """Raise an exception when hashlib.md5 is not available."""
+    with patch("hashlib.md5", side_effect=AttributeError):
+        yield
+
+
+@pytest.fixture
+def md5_unsupported_digest():
+    """Raise an exception when hashlib is using OpenSSL compiled in FIPS mode."""
+    with patch("hashlib.md5", side_effect=UnsupportedDigestmodError):
+        yield
+
+
+@pytest.fixture(params=["md5_is_missing", "md5_unsupported_digest"])
+def md5_not_available(request):
+    yield request.getfixturevalue(request.param)
+
+
+def test_hash_without_md5(md5_not_available):
+    hash_value = compute_hash("test")
+    assert isinstance(hash_value, str)
+    assert len(hash_value) == 64  # SHA256 hash is 64 characters long
+
+
+def test_hash_with_md5():
+    hash_value = compute_hash("test")
+    assert isinstance(hash_value, str)
+    assert len(hash_value) == 32  # MD5 hash is 32 characters long

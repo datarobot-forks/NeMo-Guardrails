@@ -30,7 +30,6 @@ from nemoguardrails.colang import parse_colang_file, parse_flow_elements
 from nemoguardrails.colang.v2_x.lang.colang_ast import Flow
 from nemoguardrails.colang.v2_x.lang.utils import format_colang_parsing_error_message
 from nemoguardrails.colang.v2_x.runtime.errors import ColangParsingError
-from nemoguardrails.hashing import get_default_hash_algorithm
 
 log = logging.getLogger(__name__)
 
@@ -248,7 +247,7 @@ class EmbeddingsCacheConfig(BaseModel):
         description="Whether caching of the embeddings should be enabled or not.",
     )
     key_generator: str = Field(
-        default=get_default_hash_algorithm(),
+        default="sha256",
         description="The method to use for generating the cache keys.",
     )
     store: str = Field(

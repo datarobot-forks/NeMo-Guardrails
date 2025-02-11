@@ -79,7 +79,7 @@ def test_key_generator_class(name, expected_class):
 
 
 def test_embedding_cache_config_default():
-    assert EmbeddingsCacheConfig().key_generator == "md5"
+    assert EmbeddingsCacheConfig().key_generator == "sha256"
 
 
 def test_in_memory_cache_store():

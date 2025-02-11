@@ -19,9 +19,9 @@ from time import time
 from typing import Callable, List, Optional, cast
 
 from nemoguardrails.embeddings.index import EmbeddingsIndex, IndexItem
-from nemoguardrails.hashing import generate_hash
 from nemoguardrails.kb.utils import split_markdown_in_topic_chunks
 from nemoguardrails.rails.llm.config import EmbeddingSearchProvider, KnowledgeBaseConfig
+from nemoguardrails.utils import compute_hash
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class KnowledgeBase:
             "embedding_engine", ""
         ) + self.config.embedding_search_provider.parameters.get("embedding_model", "")
 
-        hash_value = generate_hash(hash_prefix + "".join(all_text_items))
+        hash_value = compute_hash(hash_prefix + "".join(all_text_items))
         cache_file = os.path.join(CACHE_FOLDER, f"{hash_value}.ann")
         embedding_size_file = os.path.join(CACHE_FOLDER, f"{hash_value}.esize")
 
