@@ -15,7 +15,6 @@
 from unittest.mock import patch
 
 import pytest
-from _hashlib import UnsupportedDigestmodError
 
 from nemoguardrails.utils import compute_hash, new_event_dict, safe_eval
 
@@ -148,23 +147,10 @@ def test_safe_eval(input_value, expected_result):
     assert result == expected_result
 
 
-@pytest.fixture
-def md5_is_missing():
-    """Raise an exception when hashlib.md5 is not available."""
-    with patch("hashlib.md5", side_effect=AttributeError):
-        yield
-
-
-@pytest.fixture
-def md5_unsupported_digest():
-    """Raise an exception when hashlib is using OpenSSL compiled in FIPS mode."""
-    with patch("hashlib.md5", side_effect=UnsupportedDigestmodError):
-        yield
-
-
-@pytest.fixture(params=["md5_is_missing", "md5_unsupported_digest"])
+@pytest.fixture(params=[AttributeError, ValueError])
 def md5_not_available(request):
-    yield request.getfixturevalue(request.param)
+    with patch("hashlib.md5", side_effect=request.param):
+        yield
 
 
 def test_hash_without_md5(md5_not_available):
